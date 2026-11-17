@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ornament Studio v0.2</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f7f3ed;color:#30271f;font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+header{background:#352821;color:white;padding:20px}header h1{margin:0;font-size:25px}header p{margin:5px 0 0;color:#e8d4c3}
+main{max-width:1050px;margin:20px auto;padding:0 15px;display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:18px}
+section{background:white;border:1px solid #e4d8cb;border-radius:16px;padding:19px}h2{font-size:19px;margin:0 0 14px}
+label{display:block;font-weight:600;font-size:14px;margin:13px 0 6px}
+input,select,button{font:inherit}input[type=text],select{width:100%;padding:11px;border:1px solid #bdb0a5;border-radius:9px;background:white}
+.check{display:flex;align-items:center;gap:8px;margin-top:15px}.check input{width:20px;height:20px}
+button{display:block;width:100%;padding:13px;margin-top:14px;background:#704a36;border:0;color:white;border-radius:10px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.5}.secondary{background:#eae0d5;color:#3c2c22}
+canvas{display:block;width:100%;max-width:580px;margin:auto;background:#f8f5ef;border-radius:12px}
+#status{margin-top:12px;min-height:36px;color:#375a3e;font-size:14px;white-space:pre-wrap}
+.note{background:#faf2e8;border-radius:9px;padding:12px;margin-top:14px;font-size:13px;line-height:1.5}
+#details{font-size:13px;color:#655d55;margin-top:10px}footer{max-width:1050px;margin:15px auto;padding:0 15px 20px;color:#73675e;font-size:12px}
+@media(max-width:740px){main{grid-template-columns:1fr}}
+</style></head><body>
+<header><h1>✦ Ornament Studio</h1><p>v0.2 · Offline personalised STL generator</p></header>
+<main><section><h2>Design controls</h2>
+<label for="name">Name</label><input type="text" id="name" value="Monika" maxlength="24">
+<label for="shape">Ornament shape</label><select id="shape"><option value="round">Round</option><option value="heart">Heart</option><option value="star">Star</option></select>
+<label for="font">Lettering</label><select id="font"><option value="serif">Elegant serif</option><option value="bold">Modern bold</option><option value="italic">Italic serif</option></select>
+<label for="size">Width (mm)</label><select id="size"><option>70</option><option>80</option><option selected>90</option><option>100</option><option>110</option><option>120</option></select>
+<label for="thickness">Base thickness</label><select id="thickness"><option value="2.4">2.4 mm</option><option value="3" selected>3 mm</option><option value="3.6">3.6 mm</option></select>
+<label for="raise">Letter height</label><select id="raise"><option value=".8">0.8 mm</option><option value="1.2" selected>1.2 mm</option><option value="1.6">1.6 mm</option></select>
+<label class="check"><input type="checkbox" id="loop" checked> Hanging loop</label>
+<label class="check"><input type="checkbox" id="rim" checked> Raised border</label>
+<button type="button" id="download">Generate & download STL</button>
+<button type="button" id="reset" class="secondary">Reset example</button>
+<div id="status" role="status">Starting application…</div>
+<div class="note">For Bambu Studio: import the STL, keep the flat back on the build plate, slice, and inspect layers before printing. STL is a single-colour geometry format. A computer browser is the most reliable way to save and transfer STL files.</div>
+</section><section><h2>Live preview</h2><canvas id="preview" width="600" height="600">Preview requires Canvas support.</canvas>
+<div id="details"></div>
+<div class="note"><b>Version 0.2:</b> Generates a single connected height-field mesh with a real hole in the hanging loop. Lettering and borders are fused into the mesh. Edges are grid-based (0.6 mm resolution), so some curves are stepped. Print quality is not yet physically validated.</div>
+</section></main><footer>Standalone app · No external libraries or server required · STL coordinates in millimetres</footer>
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var ids=["name","shape","font","size","thickness","raise","loop","rim"];
+function settings(){return {name:$("name").value.trim()||"Name",shape:$("shape").value,font:$("font").value,size:Number($("size").value),base:Number($("thickness").value),raise:Number($("raise").value),loop:$("loop").checked,rim:$("rim").checked};}
+function fontName(c,px){return (c.font==="italic"?"italic ":"")+(c.font==="bold"?"bold ":"")+px+"px "+(c.font==="bold"?"Arial,sans-serif":"Georgia,serif");}
+function heartXY(t){return [16*Math.pow(Math.sin(t),3)/18, (13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t))/18];}
+function polygon(c){var pts=[],n=c.shape==="star"?10:180;
+for(var i=0;i<n;i++){var t=2*Math.PI*i/n;
+if(c.shape==="round")pts.push([Math.cos(t)*c.size*.45,Math.sin(t)*c.size*.45]);
+else if(c.shape==="star"){var r=(i%2?0.48:1)*c.size*.45;pts.push([Math.cos(t-Math.PI/2)*r,Math.sin(t-Math.PI/2)*r]);}
+else {var h=heartXY(t);pts.push([h[0]*c.size*.45,h[1]*c.size*.45]);}}
+return pts;}
+function contains(poly,x,y){var inside=false;for(var i=0,j=poly.length-1;i<poly.length;j=i++){var a=poly[i],b=poly[j];if((a[1]>y)!==(b[1]>y)&&x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0])inside=!inside;}return inside;}
+function build(c){
+var step=.6, span=c.size*1.28, N=Math.ceil(span/step), origin=-N*step/2,poly=polygon(c);
+var heights=new Float32Array(N*N), ctxCanvas=document.createElement("canvas");
+ctxCanvas.width=N;ctxCanvas.height=N;var tx=ctxCanvas.getContext("2d",{willReadFrequently:true});
+if(!tx)throw Error("Your browser does not support 2D Canvas.");
+var textSize=Math.floor(c.size*.22/step);
+tx.fillStyle="black";tx.textAlign="center";tx.textBaseline="middle";
+tx.font=fontName(c,textSize);
+var measured=tx.measureText(c.name).width;
+if(measured>N*.67){textSize=Math.max(8,Math.floor(textSize*N*.67/measured));tx.font=fontName(c,textSize);}
+tx.fillText(c.name,N/2,N/2);
+var textPixels=tx.getImageData(0,0,N,N).data;
+var loopY=c.size*.45+step*2, loopR=5.4, holeR=2.4;
+for(var y=0;y<N;y++)for(var x=0;x<N;x++){
+var xx=origin+(x+.5)*step,yy=origin+(y+.5)*step,idx=y*N+x;
+var inShape=contains(poly,xx,yy),dist=Math.hypot(xx,yy-loopY);
+var inLoop=c.loop&&dist<=loopR&&dist>=holeR;
+if(!inShape&&!inLoop)continue;
+var h=c.base;
+if(inShape&&textPixels[((N-1-y)*N+x)*4+3]>110)h+=c.raise;
+if(inShape&&c.rim){var rim=false;
+if(c.shape==="round"){var radius=Math.hypot(xx,yy);rim=radius>c.size*.405&&radius<c.size*.422;}
+else{var neighbors=[[step*2,0],[-step*2,0],[0,step*2],[0,-step*2]];for(var k=0;k<4;k++){if(!contains(poly,xx+neighbors[k][0],yy+neighbors[k][1])){rim=true;break;}}}
+if(rim)h=Math.max(h,c.base+.65);
+}
+heights[idx]=h;
+}
+return {heights:heights,N:N,step:step,origin:origin,c:c};
+}
+function render(model){
+var canvas=$("preview"),ctx=canvas.getContext("2d"),N=model.N,heights=model.heights,scale=600/N;
+ctx.fillStyle="#f8f5ef";ctx.fillRect(0,0,600,600);
+var img=ctx.createImageData(N,N);
+for(var y=0;y<N;y++)for(var x=0;x<N;x++){var h=heights[y*N+x],i=((N-1-y)*N+x)*4;
+var base=model.c.base,raised=h>base+.15, v=h===0?[248,245,239]:raised?[154,103,60]:[250,238,216];
+img.data[i]=v[0];img.data[i+1]=v[1];img.data[i+2]=v[2];img.data[i+3]=255;}
+var off=document.createElement("canvas");off.width=N;off.height=N;off.getContext("2d").putImageData(img,0,0);
+ctx.imageSmoothingEnabled=false;ctx.drawImage(off,0,0,600,600);
+$("details").textContent=model.c.size+" mm wide · "+model.c.base+" mm base · "+model.c.raise+" mm raised lettering · "+N+" × "+N+" mesh grid";
+}
+function toSTL(model){
+var H=model.heights,N=model.N,s=model.step,o=model.origin,verts=[];
+function face(a,b,c){verts.push(a,b,c);}
+function quad(a,b,c,d){face(a,b,c);face(a,c,d);}
+function h(x,y){return x<0||x>=N||y<0||y>=N?0:H[y*N+x];}
+for(var y=0;y<N;y++)for(var x=0;x<N;x++){
+var z=h(x,y);if(!z)continue;
+var x0=o+x*s,x1=x0+s,y0=o+y*s,y1=y0+s;
+quad([x0,y0,z],[x1,y0,z],[x1,y1,z],[x0,y1,z]);
+quad([x0,y1,0],[x1,y1,0],[x1,y0,0],[x0,y0,0]);
+var nb=h(x-1,y);if(nb<z)quad([x0,y1,nb],[x0,y0,nb],[x0,y0,z],[x0,y1,z]);
+nb=h(x+1,y);if(nb<z)quad([x1,y0,nb],[x1,y1,nb],[x1,y1,z],[x1,y0,z]);
+nb=h(x,y-1);if(nb<z)quad([x0,y0,nb],[x1,y0,nb],[x1,y0,z],[x0,y0,z]);
+nb=h(x,y+1);if(nb<z)quad([x1,y1,nb],[x0,y1,nb],[x0,y1,z],[x1,y1,z]);
+}
+var buf=new ArrayBuffer(84+verts.length*50),view=new DataView(buf);
+var title="Ornament Studio v0.2";for(var t=0;t<title.length;t++)view.setUint8(t,title.charCodeAt(t));
+view.setUint32(80,verts.length,true);var pos=84;
+for(var i=0;i<verts.length;i++){
+var a=verts[i][0],b=verts[i][1],c=verts[i][2],u=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],v=[c[0]-a[0],c[1]-a[1],c[2]-a[2]];
+var n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]],length=Math.hypot(n[0],n[1],n[2])||1;
+for(var j=0;j<3;j++){view.setFloat32(pos,n[j]/length,true);pos+=4;}
+for(var q=0;q<3;q++)for(var j=0;j<3;j++){view.setFloat32(pos,verts[i][q][j],true);pos+=4;}
+view.setUint16(pos,0,true);pos+=2;
+}
+return {blob:new Blob([buf],{type:"application/octet-stream"}),triangles:verts.length};
+}
+var current=null;
+function update(){try{current=build(settings());render(current);$("status").textContent="Preview updated. Ready to export.";}catch(e){$("status").textContent="Preview error: "+e.message;}}
+ids.forEach(function(id){$(id).addEventListener("input",update);$(id).addEventListener("change",update);});
+$("reset").addEventListener("click",function(){
+$("name").value="Monika";$("shape").value="round";$("font").value="serif";$("size").value="90";$("thickness").value="3";$("raise").value="1.2";$("loop").checked=true;$("rim").checked=true;update();
+});
+$("download").addEventListener("click",function(){
+var btn=$("download");btn.disabled=true;$("status").textContent="Generating STL…";
+setTimeout(function(){try{
+var result=toSTL(build(settings())),url=URL.createObjectURL(result.blob),a=document.createElement("a");
+a.href=url;a.download="Ornament_"+settings().name.replace(/[^a-z0-9_-]/gi,"_")+"_"+settings().size+"mm.stl";
+document.body.appendChild(a);a.click();a.remove();
+setTimeout(function(){URL.revokeObjectURL(url);},60000);
+$("status").textContent="STL generated: "+result.triangles.toLocaleString()+" triangles · "+(result.blob.size/1048576).toFixed(2)+" MB. Check the saved file in Bambu Studio.";
+}catch(e){$("status").textContent="STL export failed: "+e.message;}finally{btn.disabled=false;}},40);
+});
+update();
+})();
+</script></body></html>
